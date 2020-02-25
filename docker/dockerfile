@@ -1,0 +1,147 @@
+FROM nvcr.io/nvidia/l4t-base:r32.3.1
+
+RUN apt-get update && sudo apt-get install -y software-properties-common
+
+#INSTALL ROS
+RUN apt-add-repository universe
+RUN apt-add-repository multiverse
+RUN apt-add-repository restricted
+
+# add ROS repository to apt-get sources
+RUN sh -c 'echo "deb http://packages.ros.org/ros/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/ros-latest.list'
+RUN apt-key adv --keyserver 'hkp://keyserver.ubuntu.com:80' --recv-key C1CF6E31E6BADE8868B172B4F42ED6FBAB17C654
+
+# install ROS Base
+RUN apt-get update
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get install -y ros-melodic-ros-base
+
+# add ROS paths to environment
+RUN sh -c 'echo "source /opt/ros/melodic/setup.bash" >> ~/.bashrc'
+
+#INSTALL OPENCV ${CV_VER}
+RUN apt-get install -y build-essential cmake git libgtk2.0-dev pkg-config  libswscale-dev libtbb2 libtbb-dev
+RUN apt-get install -y python-dev python3-dev python-numpy python3-numpy
+RUN apt-get install -y curl
+
+# RUN add-apt-repository "deb http://security.ubuntu.com/ubuntu bionic-security main"
+# RUN apt-get update
+
+WORKDIR /root
+RUN mkdir opencv
+WORKDIR opencv
+
+RUN apt-get update
+RUN apt-get install -y build-essential cmake git libgtk2.0-dev pkg-config libavcodec-dev libavformat-dev libswscale-dev
+RUN apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+RUN apt-get install -y python2.7-dev python3.6-dev python-dev python-numpy python3-numpy
+RUN apt-get install -y libtbb2 libtbb-dev libjpeg-dev libpng-dev libtiff-dev libdc1394-22-dev
+RUN apt-get install -y libv4l-dev v4l-utils qv4l2 v4l2ucp
+RUN apt-get install -y curl
+RUN apt-get update
+
+ARG CV_VER=4.1.2
+
+RUN curl -L https://github.com/opencv/opencv/archive/${CV_VER}.zip -o opencv-${CV_VER}.zip
+RUN curl -L https://github.com/opencv/opencv_contrib/archive/${CV_VER}.zip -o opencv_contrib-${CV_VER}.zip
+
+RUN apt-get install unzip
+RUN unzip opencv-${CV_VER}.zip
+RUN unzip opencv_contrib-${CV_VER}.zip
+WORKDIR opencv-${CV_VER}/
+
+RUN sed -i 's/include <Eigen\/Core>/include <eigen3\/Eigen\/Core>/g' modules/core/include/opencv2/core/private.hpp
+
+RUN mkdir release
+WORKDIR release/
+
+RUN cmake -D WITH_CUDA=ON \
+    -D OPENCV_EXTRA_MODULES_PATH=../../opencv_contrib-${CV_VER}/modules \
+    -D CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-10.0 \
+    -D WITH_GSTREAMER=ON \
+    -D WITH_LIBV4L=ON \
+    -D BUILD_opencv_python2=ON \
+    -D BUILD_opencv_python3=ON \
+    -D BUILD_TESTS=OFF \
+    -D BUILD_PERF_TESTS=OFF \
+    -D BUILD_EXAMPLES=OFF \
+    -D CMAKE_BUILD_TYPE=RELEASE \
+    -D CMAKE_INSTALL_PREFIX=/usr/local ..
+
+RUN make -j3
+RUN make install
+RUN echo 'export PYTHONPATH=$PYTHONPATH:'$PWD'/python_loader/' >> ~/.bashrc
+
+WORKDIR /root
+RUN apt-get install -y libglew-dev libxkbcommon-x11-dev
+RUN git clone https://github.com/stevenlovegrove/Pangolin.git
+WORKDIR Pangolin
+RUN mkdir build
+WORKDIR build
+RUN cmake ..
+RUN cmake --build .
+
+WORKDIR /root
+RUN apt-get install -y libeigen3-dev
+RUN apt-get install -y libopenni2-dev
+RUN apt-get update --fix-missing
+RUN apt-get install -y ros-melodic-pcl-ros
+RUN git clone https://github.com/hoangthien94/ORB_SLAM2_CUDA.git ORB_SLAM2_CUDA
+WORKDIR ORB_SLAM2_CUDA 
+RUN git checkout jetson_nano
+
+RUN chmod +x build.sh
+RUN chmod +x build_ros.sh
+
+# From build.sh
+# Configuring and building Thirdparty/DBoW2 ...
+WORKDIR Thirdparty/DBoW2
+RUN mkdir build
+WORKDIR build
+RUN cmake .. -DCMAKE_BUILD_TYPE=Release
+RUN make -j3
+
+WORKDIR ../../g2o
+
+# Configuring and building Thirdparty/g2o ...
+
+RUN mkdir build
+WORKDIR build
+RUN cmake .. -DCMAKE_BUILD_TYPE=Release
+RUN make -j3
+
+WORKDIR ../../../
+
+# Uncompress vocabulary ...
+
+WORKDIR Vocabulary
+RUN tar -xf ORBvoc.txt.tar.gz
+WORKDIR ..
+
+# Configuring and building ORB_SLAM2 ...
+
+RUN mkdir build
+WORKDIR build
+#Patch all the things!
+COPY CMakeLists.txt ../CMakeLists.txt
+RUN cmake -D CMAKE_BUILD_TYPE=Release -D CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-10.0 ..
+RUN sed -i 's/GlShaderStorageBuffer = GL_SHADER_STORAGE_BUFFER/\/\/GlShaderStorageBuffer = GL_SHADER_STORAGE_BUFFER/g' /root/Pangolin/include/pangolin/gl/gl.h
+RUN sed -i 's/#include <opencv\/cv.h>/#include <opencv2\/opencv.hpp>\n#include <opencv2\/core\/types_c.h>\n#include <opencv2\/imgproc\/types_c.h>/g' ../include/ORBextractor.h
+RUN sed -i 's/#include<opencv2\/features2d\/features2d.hpp>/#include<opencv2\/features2d\/features2d.hpp>\n#include <opencv2\/core\/types_c.h>\n#include <opencv2\/imgproc\/types_c.h>/g' ../include/Tracking.h
+RUN sed -i 's/#include <opencv2\/core\/core.hpp>/#include <opencv2\/core\/core.hpp>\n#include <opencv2\/core\/types_c.h>\n#include <opencv2\/imgproc\/types_c.h>/g' ../include/PnPsolver.h
+COPY gl.hpp /root/Pangolin/include/pangolin/gl/gl.hpp
+RUN make -j2
+
+#RUN sed -i 's/$(find ORB_SLAM2_CUDA)/\/root\/ORB_SLAM2_CUDA\/Examples\/ROS\/ORB_SLAM2_CUDA/g' /root/ORB_SLAM2_CUDA/Examples/ROS/ORB_SLAM2_CUDA/launch/ros_mono.launch
+
+# RUN ./build_ros.sh
+
+#sudo xhost +local:root
+#sudo docker build -t orbslam2 .
+#sudo docker run --runtime nvidia --device /dev/video0:/dev/video0 --network host -it -e DISPLAY=$DISPLAY -v /tmp/.X11-unix/:/tmp/.X11-unix orbslam2
+
+#roslaunch /root/ORB_SLAM2_CUDA/Examples/ROS/ORB_SLAM2_CUDA/launch/ros_mono.launch bUseViewer:=true
+
+#Or, without ros
+#cd /root/ORB_SLAM2_CUDA/build/gpu
+#./tx1 ../../Vocabulary/ORBvoc.txt ../../Examples/Monocular/IDS_USB_Camera.yaml 30
