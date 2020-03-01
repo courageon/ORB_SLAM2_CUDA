@@ -1,4 +1,7 @@
 # ORB_SLAM2_CUDA
+
+ADDED by courageon is the dockerfile setup. Still working on getting ROS working within the container. When this is working I'll make a PR to merge back into master. 
+
 Modified version of ORB-SLAM2 with GPU enhancement and several ROS topics for **NVIDIA Jetson TX1, TX2, Xavier, Nano**. 
 Currently only supports Monocular camera. Run in real time.
 
